@@ -9,12 +9,27 @@ using Halide::Buffer;
 
 namespace Measures {
 
-  Func greyscale(const Buffer<float>& input);
-  Func laplacianfilter(const Buffer<float>& input);
-  Func absolute(const Buffer<float>& input);
+  enum class DebugIntermediate {
+    None,
+    Grayscale,
+    Laplacian,
+    Contrast,
+    Saturation,
+    Exposure,
+    Weight
+  };
 
-  Func contrast(const Buffer<float>& input);
-  Func saturation(const Buffer<float>& input);
-  Func wellexposedness(const Buffer<float>& input, float sigma = 0.2f);
+  Buffer<float> compute(
+    const Buffer<float> &in, 
+    float c_weight = 1.f, 
+    float s_weight = 1.f, 
+    float e_weight = 1.f,
+    DebugIntermediate debug_intermediate = DebugIntermediate::None
+  );
+
+  Buffer<float> compute_fusion(
+  const std::vector<Buffer<float>> &in, 
+  const std::vector<Buffer<float>> &weight_maps 
+);
 
 } // namespace Measures
