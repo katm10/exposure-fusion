@@ -1,6 +1,7 @@
 #include "quality_measures.h"
 #include "utils.h"
 #include <vector>
+#include <iostream>
 
 using namespace Halide;
 
@@ -136,64 +137,105 @@ Buffer<float> compute_fusion(
     // }
 
     // apply_auto_schedule(fusion);
-
+    
     // return fusion.realize({in[0].width(), in[0].height(), in[0].channels()});
 
     int levels = (int) log2(std::min(in[0].width(), in[0].height())) - 1;
+    std::cout << "levels: " << levels << std::endl;
 
-    Func finalLaplPyr[levels][in[0].channels()];
-    for (int j = 0; j < levels; ++j) {
-      for (int c = 0; c < in[0].channels(); ++c) {
-        for (size_t i = 0; i < in.size(); ++i) {
-          Func input("input");
-          Func weight("weight");
-          input(x, y) = in[i](x, y, c);
-          weight(x, y) = weight_maps[i](x, y) * normalize_weights(x, y);
+    Func weightGaussian0[in.size()]; // Holds the previous gaussian result
+    Func weightGaussian1[in.size()]; // Holds the current gaussian result
 
-          Func gaussPyr[levels];
-          gaussPyr[0](x, y) = weight(x, y);
-          for (int i = 1; i < levels; i++) {
-              gaussPyr[i](x, y) = downsample(gaussPyr[i - 1])(x, y);
-          }
+    Func inputGaussian0[in.size()]; // Holds the previous gaussian result
+    Func inputGaussian1[in.size()]; // Holds the current gaussian result
+    Func inputLaplacian[in.size()]; // Holds the current laplacian result
 
-          Func inGaussPyr[levels];
-          inGaussPyr[0](x, y) = input(x, y);
-          for (int i = 1; i < levels; i++) {
-              inGaussPyr[i](x, y) = downsample(inGaussPyr[i - 1])(x, y);
-          }
+    for (size_t i = 0; i < in.size(); i++) {
+      weightGaussian0[i](x, y) = weight_maps[i](x, y) * normalize_weights(x, y);
+      weightGaussian1[i](x, y) = downsample(weightGaussian0[i])(x, y);
 
-          Func inLaplPyr[levels];
-          inLaplPyr[levels - 1](x, y) = inGaussPyr[levels - 1](x, y);
-          for (int i = levels - 2; i >= 0; i--) {
-            inLaplPyr[i](x, y) = inGaussPyr[i](x, y) - upsample(inGaussPyr[i + 1])(x, y);
-          }
+      inputGaussian0[i](x, y) = in[i](x, y, 0);
+      inputGaussian1[i](x, y) = downsample(inputGaussian0[i])(x, y);
+      inputLaplacian[i](x, y) = weightGaussian0[i](x, y) - upsample(weightGaussian1[i])(x, y);
+    }
 
-          finalLaplPyr[j][c](x, y) += gaussPyr[j](x, y) * inLaplPyr[j](x, y);
-        }
+    Func combined[levels];
+    for (int j = 0; j < levels; j++) {
+      combined[j](x, y) = 0.f;
+      for (size_t i = 0; i < in.size(); i++) {
+        combined[j](x, y) += inputLaplacian[i](x, y) * weightGaussian0[i](x, y);
+
+        weightGaussian0[i](x, y) = weightGaussian1[i](x, y);
+        weightGaussian1[i](x, y) = downsample(weightGaussian0[i])(x, y);
+
+        inputGaussian0[i](x, y) = inputGaussian1[i](x, y);
+        inputGaussian1[i](x, y) = downsample(inputGaussian0[i])(x, y);
+        inputLaplacian[i](x, y) = weightGaussian0[i](x, y) - upsample(weightGaussian1[i])(x, y);
       }
     }
 
-    Func combinePyr[levels][in[0].channels()];
-    for (int c = 0; c < in[0].channels(); ++c) {
-      combinePyr[levels - 1][c](x, y) = finalLaplPyr[levels - 1][c](x, y);
-    }
+    Func final[levels];
+    final[levels - 1](x, y) = combined[levels -1](x, y);
     for (int j = levels - 2; j >= 0; --j) {
-      for (int c = 0; c < in[0].channels(); ++c) {
-        combinePyr[j][c](x, y) = finalLaplPyr[j][c](x, y) + upsample(combinePyr[j + 1][c])(x, y);
-      }
+      final[j](x, y) = combined[j](x, y) + upsample(final[j + 1])(x, y);
     }
 
-    Func sum("sum");
-    {
-      sum(x, y, c) = 0.f;
-      for (int c = 0; c < in[0].channels(); ++c) {
-        sum(x, y, c) += combinePyr[0][c](x, y);
-      }
-    }
+    apply_auto_schedule(final[0]);
+    return final[0].realize({in[0].width(), in[0].height(), in[0].channels()});
 
-    apply_auto_schedule(sum);
+    // Func finalLaplPyr[levels][in[0].channels()];
+    // for (int j = 0; j < levels; ++j) {
+    //   for (int c = 0; c < in[0].channels(); ++c) {
+    //     for (size_t i = 0; i < in.size(); ++i) {
+    //       Func input("input");
+    //       Func weight("weight");
+    //       input(x, y) = in[i](x, y, c);
+    //       weight(x, y) = weight_maps[i](x, y) * normalize_weights(x, y);
 
-    return sum.realize({in[0].width(), in[0].height(), in[0].channels()});
+    //       Func gaussPyr[levels];
+    //       gaussPyr[0](x, y) = weight(x, y);
+    //       for (int i = 1; i < levels; i++) {
+    //           gaussPyr[i](x, y) = downsample(gaussPyr[i - 1])(x, y);
+    //       }
+
+    //       Func inGaussPyr[levels];
+    //       inGaussPyr[0](x, y) = input(x, y);
+    //       for (int i = 1; i < levels; i++) {
+    //           inGaussPyr[i](x, y) = downsample(inGaussPyr[i - 1])(x, y);
+    //       }
+
+    //       Func inLaplPyr[levels];
+    //       inLaplPyr[levels - 1](x, y) = inGaussPyr[levels - 1](x, y);
+    //       for (int i = levels - 2; i >= 0; i--) {
+    //         inLaplPyr[i](x, y) = inGaussPyr[i](x, y) - upsample(inGaussPyr[i + 1])(x, y);
+    //       }
+
+    //       finalLaplPyr[j][c](x, y) += gaussPyr[j](x, y) * inLaplPyr[j](x, y);
+    //     }
+    //   }
+    // }
+
+    // Func combinePyr[levels][in[0].channels()];
+    // for (int c = 0; c < in[0].channels(); ++c) {
+    //   combinePyr[levels - 1][c](x, y) = finalLaplPyr[levels - 1][c](x, y);
+    // }
+    // for (int j = levels - 2; j >= 0; --j) {
+    //   for (int c = 0; c < in[0].channels(); ++c) {
+    //     combinePyr[j][c](x, y) = finalLaplPyr[j][c](x, y) + upsample(combinePyr[j + 1][c])(x, y);
+    //   }
+    // }
+
+    // Func sum("sum");
+    // {
+    //   sum(x, y, c) = 0.f;
+    //   for (int c = 0; c < in[0].channels(); ++c) {
+    //     sum(x, y, c) += combinePyr[0][c](x, y);
+    //   }
+    // }
+
+    // apply_auto_schedule(sum);
+
+    // return sum.realize({in[0].width(), in[0].height(), in[0].channels()});
 }
 
 } // namespace Measures
