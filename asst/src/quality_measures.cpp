@@ -143,45 +143,37 @@ Buffer<float> compute_fusion(
     int levels = (int) log2(std::min(in[0].width(), in[0].height())) - 1;
     std::cout << "levels: " << levels << std::endl;
 
-    Func weightGaussian0[in.size()]; // Holds the previous gaussian result
-    Func weightGaussian1[in.size()]; // Holds the current gaussian result
-
-    Func inputGaussian0[in.size()]; // Holds the previous gaussian result
-    Func inputGaussian1[in.size()]; // Holds the current gaussian result
-    Func inputLaplacian[in.size()]; // Holds the current laplacian result
-
-    for (size_t i = 0; i < in.size(); i++) {
-      weightGaussian0[i](x, y) = weight_maps[i](x, y) * normalize_weights(x, y);
-      weightGaussian1[i](x, y) = downsample(weightGaussian0[i])(x, y);
-
-      inputGaussian0[i](x, y) = in[i](x, y, 0);
-      inputGaussian1[i](x, y) = downsample(inputGaussian0[i])(x, y);
-      inputLaplacian[i](x, y) = weightGaussian0[i](x, y) - upsample(weightGaussian1[i])(x, y);
-    }
+    Func weightGaussian[in.size()][levels];
+    Func inputGaussian[in.size()][levels];
+    Func inputLaplacian[in.size()][levels];
 
     Func combined[levels];
     for (int j = 0; j < levels; j++) {
-      combined[j](x, y) = 0.f;
-      for (size_t i = 0; i < in.size(); i++) {
-        combined[j](x, y) += inputLaplacian[i](x, y) * weightGaussian0[i](x, y);
-
-        weightGaussian0[i](x, y) = weightGaussian1[i](x, y);
-        weightGaussian1[i](x, y) = downsample(weightGaussian0[i])(x, y);
-
-        inputGaussian0[i](x, y) = inputGaussian1[i](x, y);
-        inputGaussian1[i](x, y) = downsample(inputGaussian0[i])(x, y);
-        inputLaplacian[i](x, y) = weightGaussian0[i](x, y) - upsample(weightGaussian1[i])(x, y);
+      
+      if (j == 0) {
+        for (size_t i = 0; i < in.size(); i++) {
+          weightGaussian[i][j](x, y) = weight_maps[i](clamp(x, 0, weight_maps[i].width() - 1), clamp(y, 0, weight_maps[i].height() - 1)) * normalize_weights(clamp(x, 0, weight_maps[i].width() - 1), clamp(y, 0, weight_maps[i].height() - 1));
+          inputGaussian[i][j](x, y) = in[i](clamp(x, 0, in[i].width() - 1), clamp(y, 0, in[i].height() -1), 0); // TODO: cover all the channels
+        }
+      } else {
+        combined[j-1](x, y) = 0.f;
+        for (size_t i = 0; i < in.size(); i++) {
+          weightGaussian[i][j](x, y) = downsample(weightGaussian[i][j - 1])(x, y);
+          inputGaussian[i][j](x, y) = downsample(inputGaussian[i][j - 1])(x, y);
+          inputLaplacian[i][j - 1](x, y) = inputGaussian[i][j - 1](x, y) - upsample(inputGaussian[i][j])(x, y);
+          combined[j - 1](x, y) += inputLaplacian[i][j - 1](x, y) * weightGaussian[i][j - 1](x, y);
+        }
       }
     }
 
-    Func final[levels];
-    final[levels - 1](x, y) = combined[levels -1](x, y);
-    for (int j = levels - 2; j >= 0; --j) {
-      final[j](x, y) = combined[j](x, y) + upsample(final[j + 1])(x, y);
+    Func collapse[levels - 1];
+    collapse[levels - 2](x, y) = combined[levels -2](x, y);
+    for (int j = levels - 3; j >= 0; --j) {
+      collapse[j](x, y) = combined[j](x, y) + upsample(collapse[j + 1])(x, y);
     }
 
-    apply_auto_schedule(final[0]);
-    return final[0].realize({in[0].width(), in[0].height(), in[0].channels()});
+    apply_auto_schedule(collapse[0]);
+    return collapse[0].realize({in[0].width(), in[0].height(), in[0].channels()});
 
     // Func finalLaplPyr[levels][in[0].channels()];
     // for (int j = 0; j < levels; ++j) {
